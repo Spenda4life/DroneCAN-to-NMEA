@@ -169,7 +169,9 @@ struct SensorData {
     uint32_t last_mag_ms;
 };
 
+// Both g_sensors and g_sensors_mux must be defined in dronecan_handler.cpp.
 extern SensorData g_sensors;  // single global, protected by portENTER_CRITICAL
+extern portMUX_TYPE g_sensors_mux;  // spinlock — initialise with portMUX_INITIALIZER_UNLOCKED
 ```
 
 ---
@@ -197,6 +199,7 @@ $GPRMC,HHMMSS.ss,A,DDMM.MMMM,N,DDDMM.MMMM,W,SSS.S,CCC.C,DDMMYY,,,A*XX\r\n
 - SOG: compute from `sqrt(vel_n² + vel_e²)` → convert m/s to knots (× 1.94384)
 - COG: `atan2(vel_e, vel_n)` in degrees true
 - Lat/Lon: convert decimal degrees to DDMM.MMMM format (integer degrees × 100 + fractional minutes)
+- N/S and E/W hemisphere indicators must be derived from the sign of `lat_deg`/`lon_deg`: positive `lat_deg` → `N`, negative → `S`; positive `lon_deg` → `E`, negative → `W`. Always use the absolute value of `lat_deg`/`lon_deg` for the coordinate field itself.
 
 **`$GPGGA`** (emit at GPS_OUTPUT_HZ)
 ```
