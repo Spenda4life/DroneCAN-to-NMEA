@@ -183,7 +183,7 @@ static void decode_fix2(const CanardRxTransfer* transfer) {
     portEXIT_CRITICAL(&g_sensors_mux);
 }
 
-// DTID 1062 — uavcan.equipment.gnss.Auxiliary
+// DTID 1061 — uavcan.equipment.gnss.Auxiliary
 static void decode_auxiliary(const CanardRxTransfer* transfer) {
     uint64_t raw_u64 = 0;
 
@@ -205,7 +205,7 @@ static void decode_auxiliary(const CanardRxTransfer* transfer) {
     portEXIT_CRITICAL(&g_sensors_mux);
 }
 
-// DTID 1001 — uavcan.equipment.ahrs.MagneticFieldStrength2
+// DTID 1002 — uavcan.equipment.ahrs.MagneticFieldStrength2
 static void decode_mag(const CanardRxTransfer* transfer) {
     uint64_t raw_u64 = 0;
 

@@ -29,21 +29,20 @@ Build and flash with PlatformIO (`pio run -t upload`) or use the VS Code Platfor
 
 ## Testing
 
-Two test environments are provided. Run these before flashing to catch logic bugs without hardware.
+92 automated tests across native (PC) and embedded (ESP32) environments covering NMEA generation, DSDL decoding, CAN driver, multi-frame reassembly, and heartbeat broadcasting. A manual hardware integration checklist is also provided.
 
-**Native tests — no hardware required, runs on your PC:**
-```
+```bash
+# Native tests (no hardware needed)
 pio test -e native
-```
-Covers 47 tests across the entire NMEA generator: checksum correctness, DDMM.MMMM coordinate conversion, N/S/E/W hemisphere indicators, UTC time and date extraction, SOG/COG calculation and wrapping, and all sentence builders (RMC, GGA, VTG, GSA, HDM, XDR). Run these first — they catch the most common bugs (wrong checksums, coordinate format errors, negative COG values) without needing an ESP32.
 
-**Embedded tests — ESP32 plugged in via USB:**
-```
+# Embedded tests (ESP32 via USB)
 pio test -e test_embedded
-```
-Covers 20 tests for the DroneCAN DSDL decoders. Constructs synthetic CAN payloads with known bit-encoded values and verifies that `g_sensors` is populated correctly — validates Fix2 coordinate/altitude/fix-type decoding, Auxiliary DOP decoding, and magnetometer decoding. This is the primary check that the bit-offset math in the DSDL decoders is correct.
 
-Mock headers for native compilation live in `test/mocks/`. They stub out ESP32/FreeRTOS/libcanard headers so the NMEA logic can be tested on any host machine.
+# Build verification (builds all environments)
+bash scripts/verify_build.sh
+```
+
+See `CLAUDE.md` for detailed test descriptions and `test/HARDWARE_TEST_PROCEDURE.md` for the manual integration checklist.
 
 ## ESP32
 ESP32 DEVKIT V1 - DOIT (30 GPIO version)

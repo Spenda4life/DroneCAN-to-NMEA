@@ -162,31 +162,34 @@ static int build_multiframe_transfer(
 // Fix2 payload builder (same as test_dsdl.cpp)
 // ---------------------------------------------------------------------------
 
+static void set_bits_f32(uint8_t* buf, uint32_t bit_offset, float value) {
+    uint32_t raw;
+    memcpy(&raw, &value, sizeof(raw));
+    set_bits_u(buf, bit_offset, 32, raw);
+}
+
 static void build_fix2_payload(uint8_t* buf, size_t buf_size,
                                 double lat, double lon, float alt,
                                 uint8_t sats, uint8_t fix_type) {
     memset(buf, 0, buf_size);
 
     uint64_t gnss_ts = 1700000000000000ULL;
-    set_bits_u(buf, 40, 40, gnss_ts);
-    set_bits_u(buf, 80, 3, 2u);     // gnss_time_standard = UTC
-    set_bits_u(buf, 88, 8, 18u);    // num_leap_seconds
+    set_bits_u(buf, 56, 56, gnss_ts);
+    set_bits_u(buf, 112, 3, 2u);     // gnss_time_standard = UTC
+    set_bits_u(buf, 128, 8, 18u);    // num_leap_seconds
 
-    set_bits(buf, 96,  37, (int64_t)(lon * 1e8));
-    set_bits(buf, 133, 37, (int64_t)(lat * 1e8));
-    set_bits(buf, 197, 27, (int64_t)(alt * 1000.0));
+    set_bits(buf, 136, 37, (int64_t)(lon * 1e8));
+    set_bits(buf, 173, 37, (int64_t)(lat * 1e8));
+    set_bits(buf, 237, 27, (int64_t)(alt * 1000.0));
 
-    set_bits_u(buf, 224, 16, float_to_f16(0.0f));
-    set_bits_u(buf, 240, 16, float_to_f16(0.0f));
-    set_bits_u(buf, 256, 16, float_to_f16(0.0f));
-    set_bits_u(buf, 272, 6, sats);
-    set_bits_u(buf, 280, 4, fix_type);
+    set_bits_f32(buf, 264, 0.0f);
+    set_bits_f32(buf, 296, 0.0f);
+    set_bits_f32(buf, 328, 0.0f);
+    set_bits_u(buf, 360, 6, sats);
+    set_bits_u(buf, 366, 2, fix_type);
 }
 
-// Fix2 data type signature (signature is skipped in should_accept_transfer,
-// set to 0, but we need to match what canard expects for CRC validation).
-// Since should_accept_transfer sets *out_data_type_signature = 0, we use 0.
-static const uint64_t FIX2_SIGNATURE = 0;
+static const uint64_t FIX2_SIGNATURE = 0xCA41E7000F37435FULL;
 static const uint16_t FIX2_DTID = 1063;
 
 // ---------------------------------------------------------------------------
@@ -205,7 +208,7 @@ void tearDown(void) {}
 // ---------------------------------------------------------------------------
 
 void test_multiframe_fix2_reassembly(void) {
-    uint8_t payload[40];
+    uint8_t payload[48];
     build_fix2_payload(payload, sizeof(payload),
                        -33.8688, 151.2093, 50.0f, 10, 3);
 
@@ -236,7 +239,7 @@ void test_multiframe_fix2_reassembly(void) {
 // ---------------------------------------------------------------------------
 
 void test_multiframe_incomplete_transfer_ignored(void) {
-    uint8_t payload[40];
+    uint8_t payload[48];
     build_fix2_payload(payload, sizeof(payload),
                        -33.8688, 151.2093, 50.0f, 10, 3);
 
@@ -260,7 +263,7 @@ void test_multiframe_incomplete_transfer_ignored(void) {
 // ---------------------------------------------------------------------------
 
 void test_multiframe_wrong_crc_rejected(void) {
-    uint8_t payload[40];
+    uint8_t payload[48];
     build_fix2_payload(payload, sizeof(payload),
                        -33.8688, 151.2093, 50.0f, 10, 3);
 

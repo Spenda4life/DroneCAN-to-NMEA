@@ -106,97 +106,103 @@ void tearDown(void) {}
  *   gnss_time_standard = 2 (UTC)
  *   gnss_timestamp = 1700000000000000 µs (2023-11-14 22:13:20 UTC)
  *
- * Bit layout (from decode_fix2 in dronecan_handler.cpp):
- *   [ 0:39]  unused (e.g. uavcan_timestamp)
- *   [40:79]  gnss_timestamp   (40 bits, unsigned)
- *   [80:82]  gnss_time_standard (3 bits, unsigned)
- *   [83:87]  unused/reserved (5 bits to reach byte boundary at 88)
- *   [88:95]  num_leap_seconds (8 bits, unsigned)
- *   [96:132] longitude_deg_1e8 (37 bits, signed)
- *   [133:169] latitude_deg_1e8 (37 bits, signed)
- *   [170:196] unused (height_ellipsoid, 27 bits, but decoder reads height_msl at 197)
- *   [197:223] height_msl_mm (27 bits, signed)
- *   [224:239] ned_velocity[0] north (float16)
- *   [240:255] ned_velocity[1] east  (float16)
- *   [256:271] ned_velocity[2] down  (float16)
- *   [272:277] sats_used (6 bits)
- *   [280:283] status/fix_type (4 bits)
+ * Bit layout (from DSDL, uavcan.Timestamp = uint56):
+ *   [  0: 55] timestamp.usec (56 bits, unsigned — unused by decoder)
+ *   [ 56:111] gnss_timestamp.usec (56 bits, unsigned)
+ *   [112:114] gnss_time_standard (3 bits, unsigned)
+ *   [115:127] void13 (13 bits reserved padding)
+ *   [128:135] num_leap_seconds (8 bits, unsigned)
+ *   [136:172] longitude_deg_1e8 (37 bits, signed)
+ *   [173:209] latitude_deg_1e8 (37 bits, signed)
+ *   [210:236] height_ellipsoid_mm (27 bits, signed — skipped)
+ *   [237:263] height_msl_mm (27 bits, signed)
+ *   [264:295] ned_velocity[0] north (float32)
+ *   [296:327] ned_velocity[1] east  (float32)
+ *   [328:359] ned_velocity[2] down  (float32)
+ *   [360:365] sats_used (6 bits)
+ *   [366:367] status/fix_type (2 bits)
  *
- * Total: at least 284 bits → 36 bytes.
+ * Total: at least 368 bits → 46 bytes.
  */
+static void set_bits_f32(uint8_t* buf, uint32_t bit_offset, float value) {
+    uint32_t raw;
+    memcpy(&raw, &value, sizeof(raw));
+    set_bits_u(buf, bit_offset, 32, raw);
+}
+
 static void build_fix2_payload(uint8_t* buf, size_t buf_size) {
     memset(buf, 0, buf_size);
 
     const uint64_t gnss_ts = 1700000000000000ULL;
-    set_bits_u(buf, 40,  40, gnss_ts);
+    set_bits_u(buf, 56,  56, gnss_ts);
 
-    set_bits_u(buf, 80,   3, 2u);    // gnss_time_standard = UTC
-    set_bits_u(buf, 88,   8, 18u);   // num_leap_seconds = 18 (not used for UTC path)
+    set_bits_u(buf, 112,  3, 2u);    // gnss_time_standard = UTC
+    set_bits_u(buf, 128,  8, 18u);   // num_leap_seconds = 18 (not used for UTC path)
 
     // longitude: +151.2093° → 1512093000
-    set_bits(buf, 96,  37, (int64_t)1512093000LL);
+    set_bits(buf, 136, 37, (int64_t)1512093000LL);
     // latitude:  -33.8688° → -338688000
-    set_bits(buf, 133, 37, (int64_t)-338688000LL);
+    set_bits(buf, 173, 37, (int64_t)-338688000LL);
 
     // height_msl_mm: 50000 (50 m)
-    set_bits(buf, 197, 27, (int64_t)50000LL);
+    set_bits(buf, 237, 27, (int64_t)50000LL);
 
-    // NED velocities — zero
-    set_bits_u(buf, 224, 16, float_to_f16(0.0f));
-    set_bits_u(buf, 240, 16, float_to_f16(0.0f));
-    set_bits_u(buf, 256, 16, float_to_f16(0.0f));
+    // NED velocities — zero (float32)
+    set_bits_f32(buf, 264, 0.0f);
+    set_bits_f32(buf, 296, 0.0f);
+    set_bits_f32(buf, 328, 0.0f);
 
     // sats_used = 10
-    set_bits_u(buf, 272, 6, 10u);
+    set_bits_u(buf, 360, 6, 10u);
 
     // fix_status = 3
-    set_bits_u(buf, 280, 4, 3u);
+    set_bits_u(buf, 366, 2, 3u);
 }
 
 void test_fix2_latitude(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     build_fix2_payload(buf, sizeof(buf));
     dronecan_test_inject(1063, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.0001f, -33.8688f, (float)g_sensors.lat_deg);
 }
 
 void test_fix2_longitude(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     build_fix2_payload(buf, sizeof(buf));
     dronecan_test_inject(1063, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.0001f, 151.2093f, (float)g_sensors.lon_deg);
 }
 
 void test_fix2_altitude(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     build_fix2_payload(buf, sizeof(buf));
     dronecan_test_inject(1063, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.0f, g_sensors.alt_m);
 }
 
 void test_fix2_num_sats(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     build_fix2_payload(buf, sizeof(buf));
     dronecan_test_inject(1063, buf, sizeof(buf));
     TEST_ASSERT_EQUAL(10, g_sensors.num_sats);
 }
 
 void test_fix2_fix_type(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     build_fix2_payload(buf, sizeof(buf));
     dronecan_test_inject(1063, buf, sizeof(buf));
     TEST_ASSERT_EQUAL(3, g_sensors.fix_type);
 }
 
 void test_fix2_fix_valid(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     build_fix2_payload(buf, sizeof(buf));
     dronecan_test_inject(1063, buf, sizeof(buf));
     TEST_ASSERT_TRUE(g_sensors.fix_valid);
 }
 
 void test_fix2_timestamp_utc(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     build_fix2_payload(buf, sizeof(buf));
     dronecan_test_inject(1063, buf, sizeof(buf));
     // gnss_time_standard=UTC → timestamp_usec == gnss_ts directly
@@ -212,23 +218,23 @@ static void build_fix2_payload_ex(uint8_t* buf, size_t buf_size,
                                    uint64_t gnss_ts) {
     memset(buf, 0, buf_size);
 
-    set_bits_u(buf, 40,  40, gnss_ts);
-    set_bits_u(buf, 80,   3, time_std);
-    set_bits_u(buf, 88,   8, leap_sec);
+    set_bits_u(buf, 56,  56, gnss_ts);
+    set_bits_u(buf, 112,  3, time_std);
+    set_bits_u(buf, 128,  8, leap_sec);
 
     // Use same lat/lon/alt/sats/fix as the standard payload
-    set_bits(buf, 96,  37, (int64_t)1512093000LL);   // lon = +151.2093
-    set_bits(buf, 133, 37, (int64_t)-338688000LL);    // lat = -33.8688
-    set_bits(buf, 197, 27, (int64_t)50000LL);         // alt = 50 m
-    set_bits_u(buf, 224, 16, float_to_f16(0.0f));     // vel N
-    set_bits_u(buf, 240, 16, float_to_f16(0.0f));     // vel E
-    set_bits_u(buf, 256, 16, float_to_f16(0.0f));     // vel D
-    set_bits_u(buf, 272, 6, 10u);                     // sats = 10
-    set_bits_u(buf, 280, 4, 3u);                      // fix = 3D
+    set_bits(buf, 136, 37, (int64_t)1512093000LL);    // lon = +151.2093
+    set_bits(buf, 173, 37, (int64_t)-338688000LL);    // lat = -33.8688
+    set_bits(buf, 237, 27, (int64_t)50000LL);         // alt = 50 m
+    set_bits_f32(buf, 264, 0.0f);                     // vel N
+    set_bits_f32(buf, 296, 0.0f);                     // vel E
+    set_bits_f32(buf, 328, 0.0f);                     // vel D
+    set_bits_u(buf, 360, 6, 10u);                     // sats = 10
+    set_bits_u(buf, 366, 2, 3u);                      // fix = 3D
 }
 
 void test_fix2_timestamp_gps_time(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     const uint64_t T = 1700000000000000ULL;
     build_fix2_payload_ex(buf, sizeof(buf), 3, 18, T);
     dronecan_test_inject(1063, buf, sizeof(buf));
@@ -237,7 +243,7 @@ void test_fix2_timestamp_gps_time(void) {
 }
 
 void test_fix2_timestamp_tai(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     const uint64_t T = 1700000000000000ULL;
     build_fix2_payload_ex(buf, sizeof(buf), 1, 18, T);
     dronecan_test_inject(1063, buf, sizeof(buf));
@@ -246,7 +252,7 @@ void test_fix2_timestamp_tai(void) {
 }
 
 void test_fix2_timestamp_undefined(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     const uint64_t T = 1700000000000000ULL;
     build_fix2_payload_ex(buf, sizeof(buf), 0, 18, T);
     dronecan_test_inject(1063, buf, sizeof(buf));
@@ -255,7 +261,7 @@ void test_fix2_timestamp_undefined(void) {
 }
 
 void test_fix2_timestamp_utc_ignores_leap(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     const uint64_t T = 1700000000000000ULL;
     build_fix2_payload_ex(buf, sizeof(buf), 2, 18, T);
     dronecan_test_inject(1063, buf, sizeof(buf));
@@ -264,7 +270,7 @@ void test_fix2_timestamp_utc_ignores_leap(void) {
 }
 
 void test_fix2_no_fix_when_status_zero(void) {
-    uint8_t buf[40];
+    uint8_t buf[48];
     memset(buf, 0, sizeof(buf));
     // All zeros → fix_status = 0 → fix_valid = false
     dronecan_test_inject(1063, buf, sizeof(buf));
@@ -273,7 +279,7 @@ void test_fix2_no_fix_when_status_zero(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Auxiliary DOP decode tests  (DTID 1062)
+// Auxiliary DOP decode tests  (DTID 1061)
 // ---------------------------------------------------------------------------
 
 /**
@@ -292,21 +298,21 @@ static void build_auxiliary_payload(uint8_t* buf, float pdop, float hdop, float 
 void test_auxiliary_pdop(void) {
     uint8_t buf[6];
     build_auxiliary_payload(buf, 1.5f, 1.2f, 2.0f);
-    dronecan_test_inject(1062, buf, sizeof(buf));
+    dronecan_test_inject(1061, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.02f, 1.5f, g_sensors.pdop);
 }
 
 void test_auxiliary_hdop(void) {
     uint8_t buf[6];
     build_auxiliary_payload(buf, 1.5f, 1.2f, 2.0f);
-    dronecan_test_inject(1062, buf, sizeof(buf));
+    dronecan_test_inject(1061, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.02f, 1.2f, g_sensors.hdop);
 }
 
 void test_auxiliary_vdop(void) {
     uint8_t buf[6];
     build_auxiliary_payload(buf, 1.5f, 1.2f, 2.0f);
-    dronecan_test_inject(1062, buf, sizeof(buf));
+    dronecan_test_inject(1061, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.02f, 2.0f, g_sensors.vdop);
 }
 
@@ -321,14 +327,14 @@ void test_auxiliary_known_f16_values(void) {
     buf[2] = 0xCD; buf[3] = 0x3C;
     // vdop = 0x4000 → bytes [4]=0x00, [5]=0x40
     buf[4] = 0x00; buf[5] = 0x40;
-    dronecan_test_inject(1062, buf, sizeof(buf));
+    dronecan_test_inject(1061, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.5f,  g_sensors.pdop);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.2f,  g_sensors.hdop);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 2.0f,  g_sensors.vdop);
 }
 
 // ---------------------------------------------------------------------------
-// Magnetometer decode tests  (DTID 1001)
+// Magnetometer decode tests  (DTID 1002)
 // ---------------------------------------------------------------------------
 
 /**
@@ -350,28 +356,28 @@ static void build_mag_payload(uint8_t* buf, uint8_t sensor_id,
 void test_mag_valid_set(void) {
     uint8_t buf[7];
     build_mag_payload(buf, 0, 0.3f, 0.1f, -0.5f);
-    dronecan_test_inject(1001, buf, sizeof(buf));
+    dronecan_test_inject(1002, buf, sizeof(buf));
     TEST_ASSERT_TRUE(g_sensors.mag_valid);
 }
 
 void test_mag_x_value(void) {
     uint8_t buf[7];
     build_mag_payload(buf, 0, 0.3f, 0.1f, -0.5f);
-    dronecan_test_inject(1001, buf, sizeof(buf));
+    dronecan_test_inject(1002, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.3f, g_sensors.mag_x);
 }
 
 void test_mag_y_value(void) {
     uint8_t buf[7];
     build_mag_payload(buf, 0, 0.3f, 0.1f, -0.5f);
-    dronecan_test_inject(1001, buf, sizeof(buf));
+    dronecan_test_inject(1002, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.1f, g_sensors.mag_y);
 }
 
 void test_mag_z_value(void) {
     uint8_t buf[7];
     build_mag_payload(buf, 0, 0.3f, 0.1f, -0.5f);
-    dronecan_test_inject(1001, buf, sizeof(buf));
+    dronecan_test_inject(1002, buf, sizeof(buf));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, -0.5f, g_sensors.mag_z);
 }
 
@@ -379,7 +385,7 @@ void test_mag_sensor_id_ignored(void) {
     // sensor_id should be skipped; mag values should still decode correctly
     uint8_t buf[7];
     build_mag_payload(buf, 42, 0.5f, -0.2f, 0.1f);
-    dronecan_test_inject(1001, buf, sizeof(buf));
+    dronecan_test_inject(1002, buf, sizeof(buf));
     TEST_ASSERT_TRUE(g_sensors.mag_valid);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.5f,  g_sensors.mag_x);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, -0.2f, g_sensors.mag_y);
@@ -400,7 +406,7 @@ void test_mag_known_f16_values(void) {
     buf[3] = 0x66; buf[4] = 0x2E;
     // mag_z at bits [40:55]: bytes 5,6
     buf[5] = 0x00; buf[6] = 0xB8;
-    dronecan_test_inject(1001, buf, sizeof(buf));
+    dronecan_test_inject(1002, buf, sizeof(buf));
     TEST_ASSERT_TRUE(g_sensors.mag_valid);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.3f,  g_sensors.mag_x);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.1f,  g_sensors.mag_y);

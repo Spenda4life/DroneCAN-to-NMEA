@@ -83,6 +83,7 @@ lib/
 #define CAN_TX_PIN       GPIO_NUM_5
 #define CAN_RX_PIN       GPIO_NUM_4
 #define DRONECAN_NODE_ID 100          // pick any unused node ID 1–127
+#define DRONECAN_ALLOC_NODE_ID 42     // Node ID to assign via dynamic allocation
 
 // --- RS485 Serial ---
 #define UART2_TX_PIN     17
@@ -119,13 +120,14 @@ Register receivers for these Data Type IDs (DTIDs) in `dronecan_handler.cpp`:
 
 | Message | DTID | Fields Used |
 |---|---|---|
-| `uavcan.equipment.gnss.Fix2` | 1063 | timestamp, lat, lon, alt, ned_velocity[3], fix_type, num_sats, pdop |
-| `uavcan.equipment.gnss.Auxiliary` | 1062 | pdop, hdop, vdop |
-| `uavcan.equipment.ahrs.MagneticFieldStrength2` | 1001 | magnetic_field[3] (x,y,z in Gauss) |
+| `uavcan.equipment.gnss.Fix2` | 1063 | timestamp, lat, lon, alt, ned_velocity[3], fix_type, num_sats |
+| `uavcan.equipment.gnss.Auxiliary` | 1061 | pdop, hdop, vdop |
+| `uavcan.equipment.ahrs.MagneticFieldStrength2` | 1002 | magnetic_field[3] (x,y,z in Gauss) |
 | `uavcan.equipment.air_data.StaticPressure` | 1028 | static_pressure (Pa) |
 | `uavcan.equipment.air_data.StaticTemperature` | 1029 | static_temperature (K) |
 | `uavcan.equipment.imu.RawIMU` | 1003 | accelerometer_latest[3], rate_gyro_latest[3] |
 | `uavcan.protocol.NodeStatus` | 341 | (TX only — broadcast at 1 Hz as mandatory heartbeat) |
+| `uavcan.protocol.dynamic_node_id.Allocation` | 1 | (TX/RX — dynamic node ID allocator for ARK GPS) |
 
 ### SensorData Struct
 
@@ -271,12 +273,60 @@ The GX1600 only strictly needs RMC; confirm from the manual and adjust `EMIT_*` 
 
 ---
 
+## CAN Bus Hardware Notes
+
+- **TJA1050 must be powered at 5V**, not 3.3V. At 3.3V the transceiver cannot drive the bus properly and the ESP32 will immediately enter bus-off state on every boot.
+- **120Ω termination resistor is required** at each end of the CAN bus, even for a simple two-device bus at 1 Mbps. The ARK GPS has a spare CAN port that can be used for the termination resistor.
+- TJA1050 module labels (TX/RX) are from the MCU's perspective: ESP32 GPIO 5 (TX) → module TX pin, GPIO 4 (RX) → module RX pin.
+
 ## CAN Bus Robustness
 
-- Register TWAI alerts for `TWAI_ALERT_BUS_OFF` and `TWAI_ALERT_BUS_ERROR`
+- Register TWAI alerts for `TWAI_ALERT_BUS_OFF`, `TWAI_ALERT_BUS_ERROR`, `TWAI_ALERT_ERR_PASS`, `TWAI_ALERT_TX_FAILED`, `TWAI_ALERT_BUS_RECOVERED`, and `TWAI_ALERT_RX_DATA`
 - On `TWAI_ALERT_BUS_OFF`: call `twai_initiate_recovery()` automatically
+- On `TWAI_ALERT_BUS_RECOVERED`: call `twai_start()` — after recovery, TWAI is in stopped state
 - On CAN silence > `CAN_SILENCE_TIMEOUT_MS`: set `g_sensors.fix_valid = false` and emit RMC with status `V` so downstream devices know GPS is lost — do not just go silent
 - Feed `esp_task_wdt` in the main loop; watchdog timeout = 10 seconds
+
+## Dynamic Node ID Allocation
+
+The ARK GPS ships without a static node ID and requires dynamic allocation. The ESP32 acts as the allocator (3-stage handshake over DTID 1, signature `0x0B2A812620A11D40`).
+
+Wire format uses **tail-optimized encoding** (no length prefix for the unique_id dynamic array):
+- **Request** (from allocatee): Byte 0 = preferred_node_id(7 bits) | first_part(1 bit), Bytes 1..N = unique_id fragment
+- **Response** (from allocator): Byte 0 = assigned_node_id(7 bits) | first_part=0(1 bit), Bytes 1..N = accumulated unique_id echo
+
+Three stages accumulate the 16-byte unique_id (6 + 6 + 4 bytes). After all 16 bytes are received, the allocator responds with `DRONECAN_ALLOC_NODE_ID` in the node_id field.
+
+## Fix2 DSDL Bit Layout
+
+Critical reference — getting any offset wrong silently produces garbage values:
+
+```
+timestamp.usec:        bit 0,   56 bits (uavcan.Timestamp = uint56, NOT 40-bit)
+gnss_timestamp.usec:   bit 56,  56 bits
+gnss_time_standard:    bit 112, 3 bits
+void13:                bit 115, 13 bits (NOT void5)
+num_leap_seconds:      bit 128, 8 bits
+longitude_deg_1e8:     bit 136, 37 bits (signed)
+latitude_deg_1e8:      bit 173, 37 bits (signed)
+height_ellipsoid_mm:   bit 210, 27 bits (signed)
+height_msl_mm:         bit 237, 27 bits (signed)
+ned_velocity[3]:       bit 264, 3×32 bits (float32, NOT float16)
+sats_used:             bit 360, 6 bits
+status:                bit 366, 2 bits (NOT 4 bits)
+```
+
+Data type signatures (required for multi-frame CRC validation):
+| DTID | Signature |
+|---|---|
+| 1063 (Fix2) | `0xCA41E7000F37435F` |
+| 1061 (Auxiliary) | `0x9BE8BDC4C3DBBFD2` |
+| 1002 (Mag) | `0xB6AC0C442430297E` |
+| 1028 (Pressure) | `0xCDC7C43412BDC89A` |
+| 1029 (Temperature) | `0x49272A6477D96271` |
+| 1003 (RawIMU) | `0x8280632C40E574B5` |
+| 1 (Allocation) | `0x0B2A812620A11D40` |
+| 341 (NodeStatus) | `0x0F0868D0073F4C60` |
 
 ---
 
@@ -313,6 +363,10 @@ test/
   mocks/                  ← ESP32/FreeRTOS/canard stubs for host compilation
   test_nmea/              ← Native tests: NMEA generator logic (no hardware)
   test_dsdl/              ← Embedded tests: DSDL bit decoder validation (ESP32)
+  test_multiframe/        ← Embedded tests: multi-frame CAN transfer reassembly (ESP32)
+  test_can_driver/        ← Embedded tests: TWAI loopback TX/RX/alerts (ESP32)
+  test_heartbeat/         ← Embedded tests: NodeStatus broadcast format (ESP32)
+  HARDWARE_TEST_PROCEDURE.md ← Manual integration checklist (wiring, WiFi, RS485, GPS loss)
 ```
 
 ### Running tests
@@ -323,6 +377,9 @@ pio test -e native
 
 # Requires ESP32 connected via USB
 pio test -e test_embedded
+
+# Build verification (builds all environments, runs native tests)
+bash scripts/verify_build.sh
 ```
 
 ### Native tests (`test_nmea/`) — 47 tests
@@ -339,16 +396,46 @@ Tests the entire `nmea_generator.cpp` module in isolation on the host. `g_sensor
 
 Run these first after any change to `nmea_generator.cpp`. A failing checksum test is the most important failure to catch — downstream devices silently discard malformed sentences.
 
-### Embedded tests (`test_dsdl/`) — 20 tests
+### Embedded tests (`test_dsdl/`) — 31 tests
 
 Runs on the ESP32. Uses `dronecan_test_inject()` (available under `#ifdef UNIT_TEST`) to feed synthetic bit-encoded payloads directly into the DSDL decoders and verify `g_sensors` is populated correctly. Covers:
 
-- Fix2 (DTID 1063): lat/lon/alt/fix_type/num_sats/fix_valid/timestamp
-- Auxiliary (DTID 1062): pdop/hdop/vdop via float16
-- MagneticFieldStrength2 (DTID 1001): mag_x/y/z and mag_valid flag
+- Fix2 (DTID 1063): lat/lon/alt/fix_type/num_sats/fix_valid/timestamp (including GPS/TAI/UTC time standard conversion)
+- Auxiliary (DTID 1061): pdop/hdop/vdop via float16
+- MagneticFieldStrength2 (DTID 1002): mag_x/y/z and mag_valid flag
+- StaticPressure (DTID 1028): pressure_pa via float32
+- StaticTemperature (DTID 1029): temperature_k via float16
+- RawIMU (DTID 1003): accel and gyro xyz via float16
 - Unknown DTID silently ignored
 
 These tests are the primary guard against bit-offset errors in the DSDL decoders. If a field is decoded at the wrong bit position the decoded value will be wrong — catch it here before connecting real hardware.
+
+### Embedded tests (`test_multiframe/`) — 3 tests
+
+Tests multi-frame CAN transfer reassembly through `canardHandleRxFrame()`. Verifies:
+
+- Complete multi-frame Fix2 transfer is reassembled and decoded correctly
+- Incomplete transfer (only first frame) does not update g_sensors
+- Corrupted CRC causes transfer rejection
+
+### Embedded tests (`test_can_driver/`) — 8 tests
+
+Tests the CAN driver layer using TWAI in NO_ACK (loopback) mode. A TJA1050 transceiver must be wired to GPIO 4/5 but no remote CAN node is required. Covers:
+
+- `can_driver_init()` succeeds and TWAI reaches RUNNING state
+- `can_receive()` returns false on empty RX queue
+- `can_receive()` sets EFF flag and copies data correctly for extended-ID frames
+- `can_receive()` discards RTR frames
+- `can_transmit()` strips canard flags and sends raw 29-bit extended IDs
+- `can_check_alerts()` returns false on a healthy bus
+
+### Embedded tests (`test_heartbeat/`) — 3 tests
+
+Tests NodeStatus heartbeat broadcast using TWAI loopback. Verifies:
+
+- Payload is 7 bytes with health=0, mode=0 (OK/OPERATIONAL)
+- Uptime field increments between successive calls
+- Transfer ID increments modulo 32 on successive calls
 
 ### Mock headers (`test/mocks/`)
 
@@ -378,7 +465,7 @@ Execute in order. Verify each phase before starting the next.
 
 ### Phase 3 — DroneCAN Handler
 - [ ] Initialize canard instance with static memory pool (~4 KB)
-- [ ] Register transfer receivers for DTIDs: 1063, 1062, 1001, 1028, 1029, 1003
+- [ ] Register transfer receivers for DTIDs: 1063, 1061, 1002, 1028, 1029, 1003
 - [ ] Implement DSDL deserialization for each (use ARK GPS DSDL definitions)
 - [ ] Populate `g_sensors` in each callback
 - [ ] Implement NodeStatus broadcast at 1 Hz
