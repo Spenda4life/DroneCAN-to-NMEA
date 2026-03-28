@@ -376,3 +376,23 @@ void dronecan_send_node_status(void) {
         canardPopTxQueue(&g_canard);
     }
 }
+
+#ifdef UNIT_TEST
+// ---------------------------------------------------------------------------
+// Test injection — available only when UNIT_TEST is defined.
+// Constructs a minimal CanardRxTransfer whose payload_head points at the
+// supplied buffer and routes it through the same on_reception dispatcher
+// used by the real canard callback.  This lets embedded unit tests verify
+// DSDL decode logic without needing a live CAN bus.
+// ---------------------------------------------------------------------------
+void dronecan_test_inject(uint16_t data_type_id,
+                          const uint8_t* payload,
+                          uint16_t payload_len) {
+    CanardRxTransfer transfer;
+    memset(&transfer, 0, sizeof(transfer));
+    transfer.data_type_id   = data_type_id;
+    transfer.payload_head   = payload;
+    transfer.payload_len    = payload_len;
+    on_reception(&g_canard, &transfer);
+}
+#endif // UNIT_TEST

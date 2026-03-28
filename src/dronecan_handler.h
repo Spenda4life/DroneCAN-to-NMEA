@@ -66,6 +66,17 @@ void dronecan_handle_frame(const CanardCANFrame* frame, uint64_t timestamp_usec)
 // Broadcast a uavcan.protocol.NodeStatus frame (call at 1 Hz).
 void dronecan_send_node_status(void);
 
+#ifdef UNIT_TEST
+/**
+ * Test injection hook — bypasses CAN framing and feeds a raw payload
+ * directly into the DSDL decoder dispatch (on_reception).
+ * Only compiled when UNIT_TEST is defined.
+ */
+void dronecan_test_inject(uint16_t data_type_id,
+                          const uint8_t* payload,
+                          uint16_t payload_len);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
