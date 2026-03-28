@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <cstdio>
 
 // Provide the globals referenced by nmea_generator.cpp.
 // dronecan_handler.cpp is NOT compiled in the native build, so we define
@@ -86,8 +87,8 @@ void test_checksum_known_sentence(void) {
 }
 
 void test_checksum_empty_payload(void) {
-    // Payload is empty — checksum should be 0.
-    const char* sentence = "$GP";
+    // Payload is just "$" — nothing to XOR after skipping '$', so checksum = 0.
+    const char* sentence = "$";
     uint8_t csum = nmea_checksum(sentence);
     TEST_ASSERT_EQUAL_HEX8(0x00, csum);
 }
@@ -105,8 +106,8 @@ void test_finalize_appends_correctly(void) {
     const char* star = strchr(buf, '*');
     TEST_ASSERT_NOT_NULL(star);
 
-    // Total length = payload + 6 characters: *XX\r\n
-    TEST_ASSERT_EQUAL(payload_len + 6, total);
+    // Total length = payload + 5 characters: *XX\r\n
+    TEST_ASSERT_EQUAL(payload_len + 5, total);
 
     // The checksum in the sentence must match nmea_checksum
     int parsed = parse_sentence_checksum(buf);
@@ -601,6 +602,60 @@ void test_xdr_temp_checksum_valid(void) {
 }
 
 // ---------------------------------------------------------------------------
+// CAN silence timeout / stale fix tests
+// ---------------------------------------------------------------------------
+
+void test_rmc_stale_fix_emits_void(void) {
+    // Populate with real coordinates but mark fix invalid (as timeout would)
+    set_valid_fix();
+    g_sensors.lat_deg   = -33.8688;
+    g_sensors.lon_deg   = 151.2093;
+    g_sensors.vel_n_ms  = 5.0f;
+    g_sensors.vel_e_ms  = 3.0f;
+    g_sensors.fix_valid = false;
+
+    int len;
+    const char* s = build_rmc(&len);
+    TEST_ASSERT_NOT_NULL(s);
+    // Status field must be 'V' (void)
+    TEST_ASSERT_NOT_NULL(strstr(s, ",V,"));
+    // Coordinates should be zeroed defaults, not the stale values
+    TEST_ASSERT_NULL(strstr(s, "3352"));   // -33.8688 would produce "3352.xxxx"
+    // SOG must be 0
+    TEST_ASSERT_NOT_NULL(strstr(s, ",0.0,"));
+}
+
+void test_gga_stale_fix_quality_zero(void) {
+    set_valid_fix();
+    g_sensors.lat_deg   = -33.8688;
+    g_sensors.lon_deg   = 151.2093;
+    g_sensors.alt_m     = 50.0f;
+    g_sensors.fix_valid = false;
+
+    int len;
+    const char* s = build_gga(&len);
+    TEST_ASSERT_NOT_NULL(s);
+    // Quality indicator must be 0
+    // Format: ...,E,Q,NN,... — quality is after the E/W field
+    // Look for ",0," which is the quality=0 field
+    TEST_ASSERT_NOT_NULL(strstr(s, ",0,"));
+}
+
+void test_vtg_stale_fix_zero_speed(void) {
+    set_valid_fix();
+    g_sensors.vel_n_ms  = 10.0f;
+    g_sensors.vel_e_ms  = 5.0f;
+    g_sensors.fix_valid = false;
+
+    int len;
+    const char* s = build_vtg(&len);
+    TEST_ASSERT_NOT_NULL(s);
+    // SOG and COG must be zero
+    // Format: $GPVTG,COG,T,,M,SOG_kn,N,SOG_km,K,A
+    TEST_ASSERT_NOT_NULL(strstr(s, "$GPVTG,0.0,T,,M,0.0,N,0.0,K,A"));
+}
+
+// ---------------------------------------------------------------------------
 // Unity entry point
 // ---------------------------------------------------------------------------
 
@@ -674,6 +729,11 @@ int main(void) {
     // XDR temp
     RUN_TEST(test_xdr_temp_conversion);
     RUN_TEST(test_xdr_temp_checksum_valid);
+
+    // CAN silence / stale fix
+    RUN_TEST(test_rmc_stale_fix_emits_void);
+    RUN_TEST(test_gga_stale_fix_quality_zero);
+    RUN_TEST(test_vtg_stale_fix_zero_speed);
 
     return UNITY_END();
 }

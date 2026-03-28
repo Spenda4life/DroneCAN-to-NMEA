@@ -70,7 +70,7 @@ void can_transmit(const CanardCANFrame* frame) {
     memset(&msg, 0, sizeof(msg));
 
     // Strip canard flags to get the raw 29-bit identifier
-    msg.identifier = frame->id & CANARD_CAN_FRAME_ID_MASK;
+    msg.identifier = frame->id & CANARD_CAN_EXT_ID_MASK;
     msg.extd = 1;       // DroneCAN always uses extended (29-bit) IDs
     msg.rtr = 0;
     msg.data_length_code = frame->data_len;

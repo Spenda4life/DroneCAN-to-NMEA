@@ -203,6 +203,66 @@ void test_fix2_timestamp_utc(void) {
     TEST_ASSERT_EQUAL_UINT64(1700000000000000ULL, g_sensors.timestamp_usec);
 }
 
+/**
+ * Extended Fix2 payload builder — allows control of time standard and leap seconds.
+ * The original build_fix2_payload() is a wrapper using UTC defaults.
+ */
+static void build_fix2_payload_ex(uint8_t* buf, size_t buf_size,
+                                   uint8_t time_std, uint8_t leap_sec,
+                                   uint64_t gnss_ts) {
+    memset(buf, 0, buf_size);
+
+    set_bits_u(buf, 40,  40, gnss_ts);
+    set_bits_u(buf, 80,   3, time_std);
+    set_bits_u(buf, 88,   8, leap_sec);
+
+    // Use same lat/lon/alt/sats/fix as the standard payload
+    set_bits(buf, 96,  37, (int64_t)1512093000LL);   // lon = +151.2093
+    set_bits(buf, 133, 37, (int64_t)-338688000LL);    // lat = -33.8688
+    set_bits(buf, 197, 27, (int64_t)50000LL);         // alt = 50 m
+    set_bits_u(buf, 224, 16, float_to_f16(0.0f));     // vel N
+    set_bits_u(buf, 240, 16, float_to_f16(0.0f));     // vel E
+    set_bits_u(buf, 256, 16, float_to_f16(0.0f));     // vel D
+    set_bits_u(buf, 272, 6, 10u);                     // sats = 10
+    set_bits_u(buf, 280, 4, 3u);                      // fix = 3D
+}
+
+void test_fix2_timestamp_gps_time(void) {
+    uint8_t buf[40];
+    const uint64_t T = 1700000000000000ULL;
+    build_fix2_payload_ex(buf, sizeof(buf), 3, 18, T);
+    dronecan_test_inject(1063, buf, sizeof(buf));
+    // GPS time is ahead of UTC by leap seconds → subtract
+    TEST_ASSERT_EQUAL_UINT64(T - 18000000ULL, g_sensors.timestamp_usec);
+}
+
+void test_fix2_timestamp_tai(void) {
+    uint8_t buf[40];
+    const uint64_t T = 1700000000000000ULL;
+    build_fix2_payload_ex(buf, sizeof(buf), 1, 18, T);
+    dronecan_test_inject(1063, buf, sizeof(buf));
+    // TAI is ahead of UTC by 37 seconds (hardcoded in decoder)
+    TEST_ASSERT_EQUAL_UINT64(T - 37000000ULL, g_sensors.timestamp_usec);
+}
+
+void test_fix2_timestamp_undefined(void) {
+    uint8_t buf[40];
+    const uint64_t T = 1700000000000000ULL;
+    build_fix2_payload_ex(buf, sizeof(buf), 0, 18, T);
+    dronecan_test_inject(1063, buf, sizeof(buf));
+    // Undefined → pass through unchanged
+    TEST_ASSERT_EQUAL_UINT64(T, g_sensors.timestamp_usec);
+}
+
+void test_fix2_timestamp_utc_ignores_leap(void) {
+    uint8_t buf[40];
+    const uint64_t T = 1700000000000000ULL;
+    build_fix2_payload_ex(buf, sizeof(buf), 2, 18, T);
+    dronecan_test_inject(1063, buf, sizeof(buf));
+    // UTC → used directly regardless of leap count
+    TEST_ASSERT_EQUAL_UINT64(T, g_sensors.timestamp_usec);
+}
+
 void test_fix2_no_fix_when_status_zero(void) {
     uint8_t buf[40];
     memset(buf, 0, sizeof(buf));
@@ -348,6 +408,129 @@ void test_mag_known_f16_values(void) {
 }
 
 // ---------------------------------------------------------------------------
+// StaticPressure decode tests  (DTID 1028)
+// ---------------------------------------------------------------------------
+
+/**
+ * StaticPressure payload layout (from decode_static_pressure):
+ *   [0:31] static_pressure (float32, Pa)
+ */
+static void build_pressure_payload(uint8_t* buf, float pressure_pa) {
+    memset(buf, 0, 4);
+    uint32_t raw;
+    memcpy(&raw, &pressure_pa, sizeof(raw));
+    set_bits_u(buf, 0, 32, raw);
+}
+
+void test_pressure_standard_atmosphere(void) {
+    uint8_t buf[4];
+    build_pressure_payload(buf, 101325.0f);
+    dronecan_test_inject(1028, buf, sizeof(buf));
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 101325.0f, g_sensors.pressure_pa);
+}
+
+void test_pressure_low_value(void) {
+    uint8_t buf[4];
+    build_pressure_payload(buf, 95000.0f);
+    dronecan_test_inject(1028, buf, sizeof(buf));
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 95000.0f, g_sensors.pressure_pa);
+}
+
+// ---------------------------------------------------------------------------
+// StaticTemperature decode tests  (DTID 1029)
+// ---------------------------------------------------------------------------
+
+/**
+ * StaticTemperature payload layout (from decode_static_temperature):
+ *   [0:15] static_temperature (float16, K)
+ */
+static void build_temperature_payload(uint8_t* buf, float temp_k) {
+    memset(buf, 0, 2);
+    set_bits_u(buf, 0, 16, float_to_f16(temp_k));
+}
+
+void test_temperature_room_temp(void) {
+    uint8_t buf[2];
+    build_temperature_payload(buf, 293.15f);
+    dronecan_test_inject(1029, buf, sizeof(buf));
+    // float16 precision: ~0.25 at this magnitude
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 293.15f, g_sensors.temperature_k);
+}
+
+void test_temperature_freezing(void) {
+    uint8_t buf[2];
+    build_temperature_payload(buf, 273.15f);
+    dronecan_test_inject(1029, buf, sizeof(buf));
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 273.15f, g_sensors.temperature_k);
+}
+
+// ---------------------------------------------------------------------------
+// RawIMU decode tests  (DTID 1003)
+// ---------------------------------------------------------------------------
+
+/**
+ * RawIMU payload layout (fields used by decode_raw_imu):
+ *   [176:191] accelerometer_latest[0] (float16)
+ *   [192:207] accelerometer_latest[1] (float16)
+ *   [208:223] accelerometer_latest[2] (float16)
+ *   [224:239] rate_gyro_latest[0] (float16)
+ *   [240:255] rate_gyro_latest[1] (float16)
+ *   [256:271] rate_gyro_latest[2] (float16)
+ *
+ * Total: at least 272 bits → 34 bytes.
+ */
+static void build_imu_payload(uint8_t* buf, size_t buf_size,
+                               float ax, float ay, float az,
+                               float gx, float gy, float gz) {
+    memset(buf, 0, buf_size);
+    set_bits_u(buf, 176, 16, float_to_f16(ax));
+    set_bits_u(buf, 192, 16, float_to_f16(ay));
+    set_bits_u(buf, 208, 16, float_to_f16(az));
+    set_bits_u(buf, 224, 16, float_to_f16(gx));
+    set_bits_u(buf, 240, 16, float_to_f16(gy));
+    set_bits_u(buf, 256, 16, float_to_f16(gz));
+}
+
+void test_imu_accel_xyz(void) {
+    uint8_t buf[34];
+    build_imu_payload(buf, sizeof(buf), 0.0f, 0.0f, 9.8f, 0.0f, 0.0f, 0.0f);
+    dronecan_test_inject(1003, buf, sizeof(buf));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, g_sensors.accel_x);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, g_sensors.accel_y);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f,  9.8f, g_sensors.accel_z);
+}
+
+void test_imu_gyro_xyz(void) {
+    uint8_t buf[34];
+    build_imu_payload(buf, sizeof(buf), 0.0f, 0.0f, 0.0f, 0.1f, -0.1f, 0.0f);
+    dronecan_test_inject(1003, buf, sizeof(buf));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f,  0.1f,  g_sensors.gyro_x);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, -0.1f,  g_sensors.gyro_y);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f,  0.0f,  g_sensors.gyro_z);
+}
+
+void test_imu_accel_negative(void) {
+    uint8_t buf[34];
+    build_imu_payload(buf, sizeof(buf), -2.5f, -3.0f, -9.8f, 0.0f, 0.0f, 0.0f);
+    dronecan_test_inject(1003, buf, sizeof(buf));
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, -2.5f, g_sensors.accel_x);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, -3.0f, g_sensors.accel_y);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f,  -9.8f, g_sensors.accel_z);
+}
+
+void test_imu_all_zeros(void) {
+    uint8_t buf[34];
+    build_imu_payload(buf, sizeof(buf), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    dronecan_test_inject(1003, buf, sizeof(buf));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, g_sensors.accel_x);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, g_sensors.accel_y);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, g_sensors.accel_z);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, g_sensors.gyro_x);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, g_sensors.gyro_y);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, g_sensors.gyro_z);
+}
+
+// ---------------------------------------------------------------------------
 // Unknown DTID — should be silently ignored
 // ---------------------------------------------------------------------------
 
@@ -375,6 +558,10 @@ void setup(void) {
     RUN_TEST(test_fix2_fix_type);
     RUN_TEST(test_fix2_fix_valid);
     RUN_TEST(test_fix2_timestamp_utc);
+    RUN_TEST(test_fix2_timestamp_gps_time);
+    RUN_TEST(test_fix2_timestamp_tai);
+    RUN_TEST(test_fix2_timestamp_undefined);
+    RUN_TEST(test_fix2_timestamp_utc_ignores_leap);
     RUN_TEST(test_fix2_no_fix_when_status_zero);
 
     // Auxiliary
@@ -390,6 +577,20 @@ void setup(void) {
     RUN_TEST(test_mag_z_value);
     RUN_TEST(test_mag_sensor_id_ignored);
     RUN_TEST(test_mag_known_f16_values);
+
+    // StaticPressure
+    RUN_TEST(test_pressure_standard_atmosphere);
+    RUN_TEST(test_pressure_low_value);
+
+    // StaticTemperature
+    RUN_TEST(test_temperature_room_temp);
+    RUN_TEST(test_temperature_freezing);
+
+    // RawIMU
+    RUN_TEST(test_imu_accel_xyz);
+    RUN_TEST(test_imu_gyro_xyz);
+    RUN_TEST(test_imu_accel_negative);
+    RUN_TEST(test_imu_all_zeros);
 
     // Edge cases
     RUN_TEST(test_unknown_dtid_ignored);

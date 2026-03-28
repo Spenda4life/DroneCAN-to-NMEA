@@ -122,8 +122,8 @@ static void decode_fix2(const CanardRxTransfer* transfer) {
             case 2: // UTC — use directly
                 utc_usec = gnss_timestamp_usec;
                 break;
-            case 3: // GPS — add leap seconds to convert GPS time to UTC
-                utc_usec = gnss_timestamp_usec + ((uint64_t)num_leap_seconds * 1000000ULL);
+            case 3: // GPS — GPS time is ahead of UTC by leap seconds
+                utc_usec = gnss_timestamp_usec - ((uint64_t)num_leap_seconds * 1000000ULL);
                 break;
             case 1: // TAI — subtract 37 seconds (current TAI-UTC offset)
                 utc_usec = (gnss_timestamp_usec > 37000000ULL)
