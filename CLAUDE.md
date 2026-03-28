@@ -304,6 +304,62 @@ Shared state (`g_sensors`) protected with `portENTER_CRITICAL` / `portEXIT_CRITI
 
 ---
 
+## Testing
+
+### Test structure
+
+```
+test/
+  mocks/                  ← ESP32/FreeRTOS/canard stubs for host compilation
+  test_nmea/              ← Native tests: NMEA generator logic (no hardware)
+  test_dsdl/              ← Embedded tests: DSDL bit decoder validation (ESP32)
+```
+
+### Running tests
+
+```bash
+# No hardware needed — runs on host PC
+pio test -e native
+
+# Requires ESP32 connected via USB
+pio test -e test_embedded
+```
+
+### Native tests (`test_nmea/`) — 47 tests
+
+Tests the entire `nmea_generator.cpp` module in isolation on the host. `g_sensors` is populated directly by the test; no CAN bus or FreeRTOS involved. Covers:
+
+- `nmea_checksum()` and `nmea_finalize()` correctness (validated against a known RMC sentence)
+- DDMM.MMMM coordinate conversion for lat and lon
+- N/S and E/W hemisphere indicator logic
+- UTC time and calendar date extraction from `timestamp_usec`
+- SOG (m/s → knots) and COG (atan2 → 0–360°, no negative wrap)
+- All sentence builders: RMC, GGA, VTG, GSA, HDM, XDR baro, XDR temp
+- Null return from `build_hdm()` when `mag_valid = false`
+
+Run these first after any change to `nmea_generator.cpp`. A failing checksum test is the most important failure to catch — downstream devices silently discard malformed sentences.
+
+### Embedded tests (`test_dsdl/`) — 20 tests
+
+Runs on the ESP32. Uses `dronecan_test_inject()` (available under `#ifdef UNIT_TEST`) to feed synthetic bit-encoded payloads directly into the DSDL decoders and verify `g_sensors` is populated correctly. Covers:
+
+- Fix2 (DTID 1063): lat/lon/alt/fix_type/num_sats/fix_valid/timestamp
+- Auxiliary (DTID 1062): pdop/hdop/vdop via float16
+- MagneticFieldStrength2 (DTID 1001): mag_x/y/z and mag_valid flag
+- Unknown DTID silently ignored
+
+These tests are the primary guard against bit-offset errors in the DSDL decoders. If a field is decoded at the wrong bit position the decoded value will be wrong — catch it here before connecting real hardware.
+
+### Mock headers (`test/mocks/`)
+
+Stub headers that satisfy all ESP32/FreeRTOS/libcanard `#include` directives so `nmea_generator.cpp` compiles on a host machine. They must never be included in the firmware build — they are only on the native include path (`-I test/mocks`). Do not add real logic to these files.
+
+### `dronecan_test_inject()`
+
+Declared in `dronecan_handler.h` and defined in `dronecan_handler.cpp` only when `UNIT_TEST` is defined. Constructs a minimal `CanardRxTransfer` from a raw byte buffer and routes it through `on_reception()`. Do not call this from production code.
+
+---
+
 ## Implementation Phases
 
 Execute in order. Verify each phase before starting the next.
