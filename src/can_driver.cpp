@@ -31,9 +31,10 @@ void can_driver_init(void) {
         return;
     }
 
-    // Register alerts for bus-off and bus-error conditions
-    uint32_t alerts = TWAI_ALERT_BUS_OFF | TWAI_ALERT_BUS_ERROR |
-                      TWAI_ALERT_ERR_PASS | TWAI_ALERT_TX_FAILED;
+    // Register alerts for bus-off, recovery, and error conditions
+    uint32_t alerts = TWAI_ALERT_BUS_OFF | TWAI_ALERT_BUS_RECOVERED |
+                      TWAI_ALERT_BUS_ERROR | TWAI_ALERT_ERR_PASS |
+                      TWAI_ALERT_TX_FAILED | TWAI_ALERT_RX_DATA;
     err = twai_reconfigure_alerts(alerts, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "TWAI alert config failed: %d", err);
@@ -107,17 +108,20 @@ bool can_check_alerts(void) {
     }
 
     if (alerts & TWAI_ALERT_TX_FAILED) {
-        // TX failure is non-fatal; just note it
+        ESP_LOGW(TAG, "TWAI TX failed");
         error_fired = true;
     }
 
-    // If recovery completed, clear bus-off flag
-    twai_status_info_t status;
-    if (twai_get_status_info(&status) == ESP_OK) {
-        if (status.state == TWAI_STATE_RUNNING && g_bus_off) {
-            g_bus_off = false;
-            ESP_LOGI(TAG, "TWAI bus recovered");
-        }
+    if (alerts & TWAI_ALERT_BUS_RECOVERED) {
+        ESP_LOGI(TAG, "TWAI bus recovered, restarting driver");
+        g_bus_off = false;
+        error_fired = true;
+        // After recovery, TWAI is in stopped state — must restart
+        twai_start();
+    }
+
+    if (alerts & TWAI_ALERT_RX_DATA) {
+        // RX data available — not an error, just informational
     }
 
     return error_fired;

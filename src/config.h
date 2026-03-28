@@ -6,6 +6,7 @@
 #define CAN_TX_PIN       GPIO_NUM_5
 #define CAN_RX_PIN       GPIO_NUM_4
 #define DRONECAN_NODE_ID 100          // pick any unused node ID 1-127
+#define DRONECAN_ALLOC_NODE_ID 42     // Node ID to assign via dynamic allocation
 
 // --- RS485 Serial ---
 #define UART2_TX_PIN     17

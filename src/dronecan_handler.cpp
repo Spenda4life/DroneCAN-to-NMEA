@@ -20,6 +20,18 @@ static uint8_t canard_memory_pool[4096];
 
 // Transfer ID counters for TX transfers
 static uint8_t node_status_transfer_id = 0;
+static uint8_t alloc_transfer_id = 0;
+
+// ---------------------------------------------------------------------------
+// Dynamic Node ID Allocation state
+// ---------------------------------------------------------------------------
+static const uint16_t ALLOCATION_DTID = 1;
+static const uint64_t ALLOCATION_SIGNATURE = 0x0B2A812620A11D40ULL;
+
+static uint8_t  alloc_unique_id[16];   // Accumulated unique ID from allocatee
+static uint8_t  alloc_unique_id_len;   // How many bytes accumulated so far
+static uint32_t alloc_last_activity_ms; // Timeout tracking
+static const uint32_t ALLOC_TIMEOUT_MS = 2000;
 
 // ---------------------------------------------------------------------------
 // Float16 conversion helper
@@ -57,62 +69,81 @@ static float f16_to_float(uint16_t h) {
 // ---------------------------------------------------------------------------
 
 // DTID 1063 — uavcan.equipment.gnss.Fix2
+//
+// Bit layout (from DSDL, uavcan.Timestamp = uint56):
+//   timestamp.usec:        bit 0,   56 bits
+//   gnss_timestamp.usec:   bit 56,  56 bits
+//   gnss_time_standard:    bit 112, 3 bits
+//   void13:                bit 115, 13 bits (reserved padding)
+//   num_leap_seconds:      bit 128, 8 bits
+//   longitude_deg_1e8:     bit 136, 37 bits (signed)
+//   latitude_deg_1e8:      bit 173, 37 bits (signed)
+//   height_ellipsoid_mm:   bit 210, 27 bits (signed)
+//   height_msl_mm:         bit 237, 27 bits (signed)
+//   ned_velocity[3]:       bit 264, 3×32 bits (float32!)
+//   sats_used:             bit 360, 6 bits
+//   status:                bit 366, 2 bits
+//
 static void decode_fix2(const CanardRxTransfer* transfer) {
     int64_t raw_s64 = 0;
     uint64_t raw_u64 = 0;
 
-    // gnss_timestamp (bit 40, len 40)
-    canardDecodeScalar(transfer, 40, 40, false, &raw_u64);
+    // gnss_timestamp (bit 56, len 56)
+    canardDecodeScalar(transfer, 56, 56, false, &raw_u64);
     uint64_t gnss_timestamp_usec = (uint64_t)raw_u64;
 
-    // gnss_time_standard (bit 80, len 3)
+    // gnss_time_standard (bit 112, len 3)
     raw_u64 = 0;
-    canardDecodeScalar(transfer, 80, 3, false, &raw_u64);
+    canardDecodeScalar(transfer, 112, 3, false, &raw_u64);
     uint8_t gnss_time_standard = (uint8_t)raw_u64;
 
-    // num_leap_seconds (bit 88, len 8)
+    // num_leap_seconds (bit 128, len 8)
     raw_u64 = 0;
-    canardDecodeScalar(transfer, 88, 8, false, &raw_u64);
+    canardDecodeScalar(transfer, 128, 8, false, &raw_u64);
     uint8_t num_leap_seconds = (uint8_t)raw_u64;
 
-    // longitude_deg_1e8 (bit 96, len 37, signed)
+    // longitude_deg_1e8 (bit 136, len 37, signed)
     raw_s64 = 0;
-    canardDecodeScalar(transfer, 96, 37, true, &raw_s64);
+    canardDecodeScalar(transfer, 136, 37, true, &raw_s64);
     double lon_deg = (double)raw_s64 / 1e8;
 
-    // latitude_deg_1e8 (bit 133, len 37, signed)
+    // latitude_deg_1e8 (bit 173, len 37, signed)
     raw_s64 = 0;
-    canardDecodeScalar(transfer, 133, 37, true, &raw_s64);
+    canardDecodeScalar(transfer, 173, 37, true, &raw_s64);
     double lat_deg = (double)raw_s64 / 1e8;
 
-    // height_msl_mm (bit 197, len 27, signed)
-    raw_s64 = 0;
-    canardDecodeScalar(transfer, 197, 27, true, &raw_s64);
-    float alt_m = (float)raw_s64 / 1000.0f;
+    // height_msl_mm (bit 237, len 27, signed)
+    // Use int32_t — canardDecodeScalar sign-extends to 32 bits, not 64
+    int32_t height_msl_mm = 0;
+    canardDecodeScalar(transfer, 237, 27, true, &height_msl_mm);
+    float alt_m = (float)height_msl_mm / 1000.0f;
 
-    // ned_velocity[0] north (bit 224, len 16, float16)
-    raw_u64 = 0;
-    canardDecodeScalar(transfer, 224, 16, false, &raw_u64);
-    float vel_n = f16_to_float((uint16_t)raw_u64);
+    // ned_velocity[0] north (bit 264, len 32, float32)
+    uint32_t raw_u32 = 0;
+    canardDecodeScalar(transfer, 264, 32, false, &raw_u32);
+    float vel_n;
+    memcpy(&vel_n, &raw_u32, sizeof(vel_n));
 
-    // ned_velocity[1] east (bit 240, len 16, float16)
-    raw_u64 = 0;
-    canardDecodeScalar(transfer, 240, 16, false, &raw_u64);
-    float vel_e = f16_to_float((uint16_t)raw_u64);
+    // ned_velocity[1] east (bit 296, len 32, float32)
+    raw_u32 = 0;
+    canardDecodeScalar(transfer, 296, 32, false, &raw_u32);
+    float vel_e;
+    memcpy(&vel_e, &raw_u32, sizeof(vel_e));
 
-    // ned_velocity[2] down (bit 256, len 16, float16)
-    raw_u64 = 0;
-    canardDecodeScalar(transfer, 256, 16, false, &raw_u64);
-    float vel_d = f16_to_float((uint16_t)raw_u64);
+    // ned_velocity[2] down (bit 328, len 32, float32)
+    raw_u32 = 0;
+    canardDecodeScalar(transfer, 328, 32, false, &raw_u32);
+    float vel_d;
+    memcpy(&vel_d, &raw_u32, sizeof(vel_d));
 
-    // sats_used (bit 272, len 6)
+    // sats_used (bit 360, len 6)
     raw_u64 = 0;
-    canardDecodeScalar(transfer, 272, 6, false, &raw_u64);
+    canardDecodeScalar(transfer, 360, 6, false, &raw_u64);
     uint8_t num_sats = (uint8_t)raw_u64;
 
-    // status / fix_type (bit 280, len 4)
+    // status (bit 366, len 2)
     raw_u64 = 0;
-    canardDecodeScalar(transfer, 280, 4, false, &raw_u64);
+    canardDecodeScalar(transfer, 366, 2, false, &raw_u64);
     uint8_t fix_status = (uint8_t)raw_u64;
 
     // Convert gnss_timestamp to UTC microseconds since Unix epoch
@@ -272,6 +303,114 @@ static void decode_raw_imu(const CanardRxTransfer* transfer) {
 }
 
 // ---------------------------------------------------------------------------
+// Bit-level encode helper
+// ---------------------------------------------------------------------------
+static void encode_bits(uint8_t* buf, uint32_t bit_offset, uint8_t bit_len, uint64_t value) {
+    for (uint8_t i = 0; i < bit_len; i++) {
+        uint32_t abs_bit = bit_offset + i;
+        uint32_t byte_idx = abs_bit / 8u;
+        uint8_t  bit_idx  = (uint8_t)(abs_bit % 8u);
+        if (value & (1ULL << i)) {
+            buf[byte_idx] |= (uint8_t)(1u << bit_idx);
+        } else {
+            buf[byte_idx] &= (uint8_t)~(1u << bit_idx);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TX queue drain helper
+// ---------------------------------------------------------------------------
+static void dronecan_tx_flush(void) {
+    const CanardCANFrame* txf;
+    while ((txf = canardPeekTxQueue(&g_canard)) != NULL) {
+        can_transmit(txf);
+        canardPopTxQueue(&g_canard);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic Node ID Allocator
+//
+// Wire format (tail-optimized, no length prefix for unique_id array):
+//   Byte 0: node_id (bits 0-6) | first_part_of_unique_id (bit 7)
+//   Bytes 1..N: raw unique_id bytes (length = payload_len - 1)
+// ---------------------------------------------------------------------------
+static void handle_allocation(const CanardRxTransfer* transfer) {
+    // Only process anonymous transfers (from nodes without an ID)
+    if (transfer->source_node_id != CANARD_BROADCAST_NODE_ID) return;
+
+    if (transfer->payload_len < 1) return;
+
+    // Decode byte 0: node_id (7 bits) | first_part (1 bit)
+    uint64_t raw = 0;
+    canardDecodeScalar(transfer, 0, 7, false, &raw);
+    uint8_t preferred_node_id = (uint8_t)raw;
+    (void)preferred_node_id;  // we assign our own ID
+
+    raw = 0;
+    canardDecodeScalar(transfer, 7, 1, false, &raw);
+    bool first_part = (bool)raw;
+
+    // Unique ID bytes follow directly after byte 0 (tail optimization)
+    uint8_t uid_len = (uint8_t)(transfer->payload_len - 1);
+    if (uid_len > 16) uid_len = 16;
+
+    uint8_t uid_bytes[16];
+    for (uint8_t i = 0; i < uid_len; i++) {
+        raw = 0;
+        canardDecodeScalar(transfer, 8 + i * 8, 8, false, &raw);
+        uid_bytes[i] = (uint8_t)raw;
+    }
+
+    // Reset on first_part or timeout
+    if (first_part) {
+        alloc_unique_id_len = 0;
+    }
+    if (alloc_unique_id_len > 0 &&
+        (millis() - alloc_last_activity_ms) > ALLOC_TIMEOUT_MS) {
+        alloc_unique_id_len = 0;
+    }
+    alloc_last_activity_ms = millis();
+
+    // Append received bytes
+    for (uint8_t i = 0; i < uid_len && alloc_unique_id_len < 16; i++) {
+        alloc_unique_id[alloc_unique_id_len++] = uid_bytes[i];
+    }
+
+    ESP_LOGI(TAG, "Alloc RX: first=%d rcvd=%d accum=%d", first_part, uid_len, alloc_unique_id_len);
+
+    // Build response (same tail-optimized format):
+    //   Byte 0: node_id | first_part=0
+    //   Bytes 1..N: all accumulated unique_id bytes
+    uint8_t resp[17];  // 1 header + up to 16 uid bytes
+    memset(resp, 0, sizeof(resp));
+
+    uint8_t resp_node_id = (alloc_unique_id_len >= 16) ? DRONECAN_ALLOC_NODE_ID : 0;
+    resp[0] = (uint8_t)(resp_node_id & 0x7F);  // first_part = 0 (bit 7 = 0)
+    memcpy(&resp[1], alloc_unique_id, alloc_unique_id_len);
+
+    uint16_t resp_len = (uint16_t)(1 + alloc_unique_id_len);
+
+    int16_t bc_res = canardBroadcast(&g_canard,
+                    ALLOCATION_SIGNATURE,
+                    ALLOCATION_DTID,
+                    &alloc_transfer_id,
+                    CANARD_TRANSFER_PRIORITY_LOW,
+                    resp,
+                    resp_len);
+    if (bc_res <= 0) {
+        ESP_LOGE(TAG, "Alloc broadcast failed: %d", bc_res);
+    }
+    dronecan_tx_flush();
+
+    if (alloc_unique_id_len >= 16) {
+        ESP_LOGI(TAG, "Allocated node ID %d", DRONECAN_ALLOC_NODE_ID);
+        alloc_unique_id_len = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Canard callbacks
 // ---------------------------------------------------------------------------
 
@@ -285,13 +424,26 @@ static bool should_accept_transfer(const CanardInstance* ins,
     (void)source_node_id;
 
     switch (data_type_id) {
+        case 1:    // dynamic_node_id.Allocation
+            *out_data_type_signature = ALLOCATION_SIGNATURE;
+            return true;
         case 1063: // Fix2
-        case 1062: // Auxiliary
-        case 1001: // MagneticFieldStrength2
+            *out_data_type_signature = 0xCA41E7000F37435FULL;
+            return true;
+        case 1061: // Auxiliary
+            *out_data_type_signature = 0x9BE8BDC4C3DBBFD2ULL;
+            return true;
+        case 1002: // MagneticFieldStrength2
+            *out_data_type_signature = 0xB6AC0C442430297EULL;
+            return true;
         case 1028: // StaticPressure
+            *out_data_type_signature = 0xCDC7C43412BDC89AULL;
+            return true;
         case 1029: // StaticTemperature
+            *out_data_type_signature = 0x49272A6477D96271ULL;
+            return true;
         case 1003: // RawIMU
-            *out_data_type_signature = 0;  // skip signature checking on RX
+            *out_data_type_signature = 0x8280632C40E574B5ULL;
             return true;
         default:
             return false;
@@ -303,12 +455,13 @@ static void on_reception(CanardInstance* ins,
     (void)ins;
 
     switch (transfer->data_type_id) {
-        case 1063: decode_fix2(transfer);             break;
-        case 1062: decode_auxiliary(transfer);        break;
-        case 1001: decode_mag(transfer);              break;
-        case 1028: decode_static_pressure(transfer);  break;
+        case 1:    handle_allocation(transfer);        break;
+        case 1063: decode_fix2(transfer);              break;
+        case 1061: decode_auxiliary(transfer);         break;
+        case 1002: decode_mag(transfer);               break;
+        case 1028: decode_static_pressure(transfer);   break;
         case 1029: decode_static_temperature(transfer); break;
-        case 1003: decode_raw_imu(transfer);          break;
+        case 1003: decode_raw_imu(transfer);           break;
         default:   break;
     }
 }
@@ -319,6 +472,8 @@ static void on_reception(CanardInstance* ins,
 
 void dronecan_init(void) {
     memset(&g_sensors, 0, sizeof(g_sensors));
+    alloc_unique_id_len = 0;
+    alloc_last_activity_ms = 0;
 
     canardInit(&g_canard,
                canard_memory_pool,
@@ -369,12 +524,7 @@ void dronecan_send_node_status(void) {
                     payload,
                     sizeof(payload));
 
-    // Drain the TX queue
-    const CanardCANFrame* txf;
-    while ((txf = canardPeekTxQueue(&g_canard)) != NULL) {
-        can_transmit(txf);
-        canardPopTxQueue(&g_canard);
-    }
+    dronecan_tx_flush();
 }
 
 #ifdef UNIT_TEST
