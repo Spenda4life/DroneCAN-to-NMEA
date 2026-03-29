@@ -35,5 +35,9 @@
 #define AUX_OUTPUT_HZ    1      // GSA / XDR output rate
 #define CAN_SILENCE_TIMEOUT_MS 5000  // Emit void sentences after this
 
+// --- AHRS ---
+#define AHRS_TILT_COMP   true   // Use accel data for tilt-compensated heading
+#define IMU_STALE_MS     1000   // Fall back to raw mag if no IMU data within this window
+
 // --- LED ---
 #define LED_STATUS_PIN   2      // Onboard LED GPIO 2

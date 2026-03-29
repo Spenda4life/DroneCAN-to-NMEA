@@ -554,6 +554,109 @@ void test_hdm_checksum_valid(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Tilt-compensated heading tests
+// ---------------------------------------------------------------------------
+
+void test_hdm_tilt_comp_level_matches_raw(void) {
+    // When device is level (accel_z = -9.81, accel_x = accel_y = 0),
+    // compensated heading should match raw heading.
+    g_sensors.mag_valid   = true;
+    g_sensors.mag_x       = 0.3f;
+    g_sensors.mag_y       = 0.4f;
+    g_sensors.mag_z       = 0.0f;
+    g_sensors.accel_x     = 0.0f;
+    g_sensors.accel_y     = 0.0f;
+    g_sensors.accel_z     = 9.81f;
+    g_sensors.last_imu_ms = 1;
+
+    float raw_heading = atan2f(0.4f, 0.3f) * 180.0f / (float)M_PI;
+    if (raw_heading < 0.0f) raw_heading += 360.0f;
+
+    int len;
+    const char* s = build_hdm(&len);
+    TEST_ASSERT_NOT_NULL(s);
+    const char* comma = strchr(s, ',');
+    TEST_ASSERT_NOT_NULL(comma);
+    float heading = strtof(comma + 1, NULL);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, raw_heading, heading);
+}
+
+void test_hdm_tilt_comp_30deg_roll(void) {
+    // Simulate 30° roll: accel_y ≈ 4.9, accel_z ≈ -8.5
+    // With mag_z present, tilt compensation should change the heading vs raw.
+    g_sensors.mag_valid   = true;
+    g_sensors.mag_x       = 0.2f;
+    g_sensors.mag_y       = 0.1f;
+    g_sensors.mag_z       = 0.3f;  // vertical component causes raw vs comp divergence
+    g_sensors.accel_x     = 0.0f;
+    g_sensors.accel_y     = 4.9f;
+    g_sensors.accel_z     = -8.5f;
+    g_sensors.last_imu_ms = 1;
+
+    float raw_heading = atan2f(0.1f, 0.2f) * 180.0f / (float)M_PI;
+    if (raw_heading < 0.0f) raw_heading += 360.0f;
+
+    int len;
+    const char* s = build_hdm(&len);
+    TEST_ASSERT_NOT_NULL(s);
+    const char* comma = strchr(s, ',');
+    TEST_ASSERT_NOT_NULL(comma);
+    float heading = strtof(comma + 1, NULL);
+
+    // Heading should differ from raw by more than 1° due to tilt compensation
+    float diff = fabsf(heading - raw_heading);
+    if (diff > 180.0f) diff = 360.0f - diff;
+    TEST_ASSERT_TRUE(diff > 1.0f);
+
+    // Must still be valid 0-360
+    TEST_ASSERT_TRUE(heading >= 0.0f);
+    TEST_ASSERT_TRUE(heading < 360.0f);
+}
+
+void test_hdm_imu_stale_falls_back_to_raw(void) {
+    // last_imu_ms = 0 with mock millis() returning 0 → not fresh (last_imu_ms must be > 0)
+    g_sensors.mag_valid   = true;
+    g_sensors.mag_x       = 0.2f;
+    g_sensors.mag_y       = 0.1f;
+    g_sensors.mag_z       = 0.3f;
+    g_sensors.accel_x     = 0.0f;
+    g_sensors.accel_y     = 4.9f;
+    g_sensors.accel_z     = -8.5f;
+    g_sensors.last_imu_ms = 0;  // stale — never received
+
+    float raw_heading = atan2f(0.1f, 0.2f) * 180.0f / (float)M_PI;
+    if (raw_heading < 0.0f) raw_heading += 360.0f;
+
+    int len;
+    const char* s = build_hdm(&len);
+    TEST_ASSERT_NOT_NULL(s);
+    const char* comma = strchr(s, ',');
+    TEST_ASSERT_NOT_NULL(comma);
+    float heading = strtof(comma + 1, NULL);
+
+    // Should match raw heading since IMU data is stale
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, raw_heading, heading);
+}
+
+void test_hdm_tilt_comp_checksum_valid(void) {
+    g_sensors.mag_valid   = true;
+    g_sensors.mag_x       = 0.3f;
+    g_sensors.mag_y       = 0.2f;
+    g_sensors.mag_z       = 0.1f;
+    g_sensors.accel_x     = 0.0f;
+    g_sensors.accel_y     = 0.0f;
+    g_sensors.accel_z     = 9.81f;
+    g_sensors.last_imu_ms = 1;
+
+    int len;
+    const char* s = build_hdm(&len);
+    TEST_ASSERT_NOT_NULL(s);
+    int parsed = parse_sentence_checksum(s);
+    TEST_ASSERT_NOT_EQUAL(-1, parsed);
+    TEST_ASSERT_EQUAL_HEX8(nmea_checksum(s), (uint8_t)parsed);
+}
+
+// ---------------------------------------------------------------------------
 // XDR baro tests
 // ---------------------------------------------------------------------------
 
@@ -721,6 +824,12 @@ int main(void) {
     RUN_TEST(test_hdm_south);
     RUN_TEST(test_hdm_no_negative_heading);
     RUN_TEST(test_hdm_checksum_valid);
+
+    // Tilt-compensated heading
+    RUN_TEST(test_hdm_tilt_comp_level_matches_raw);
+    RUN_TEST(test_hdm_tilt_comp_30deg_roll);
+    RUN_TEST(test_hdm_imu_stale_falls_back_to_raw);
+    RUN_TEST(test_hdm_tilt_comp_checksum_valid);
 
     // XDR baro
     RUN_TEST(test_xdr_baro_conversion);

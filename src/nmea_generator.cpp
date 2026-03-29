@@ -6,6 +6,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <Arduino.h>
 
 // ---------------------------------------------------------------------------
 // Core helpers
@@ -261,7 +262,28 @@ const char* build_hdm(int* out_len) {
         return NULL;
     }
 
-    float heading = atan2f(s.mag_y, s.mag_x) * 180.0f / (float)M_PI;
+    float heading;
+#if AHRS_TILT_COMP
+    uint32_t now = millis();
+    bool imu_fresh = (s.last_imu_ms > 0) && ((now - s.last_imu_ms) < IMU_STALE_MS);
+    if (imu_fresh) {
+        // Tilt-compensated heading using accelerometer roll/pitch
+        float roll  = atan2f(s.accel_y, s.accel_z);
+        float pitch = atan2f(-s.accel_x, sqrtf(s.accel_y * s.accel_y + s.accel_z * s.accel_z));
+
+        float mag_x_comp = s.mag_x * cosf(pitch) + s.mag_z * sinf(pitch);
+        float mag_y_comp = s.mag_x * sinf(roll) * sinf(pitch)
+                         + s.mag_y * cosf(roll)
+                         - s.mag_z * sinf(roll) * cosf(pitch);
+
+        heading = atan2f(mag_y_comp, mag_x_comp) * 180.0f / (float)M_PI;
+    } else
+#endif
+    {
+        // Raw (untilted) magnetic heading
+        heading = atan2f(s.mag_y, s.mag_x) * 180.0f / (float)M_PI;
+    }
+
     if (heading < 0.0f) {
         heading += 360.0f;
     }

@@ -44,6 +44,7 @@ struct SensorData {
     // Staleness tracking
     uint32_t last_fix_ms;     // millis() at last Fix2 receive
     uint32_t last_mag_ms;
+    uint32_t last_imu_ms;     // millis() at last RawIMU receive
 };
 
 extern SensorData g_sensors;

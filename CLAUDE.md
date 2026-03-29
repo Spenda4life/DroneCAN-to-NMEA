@@ -105,6 +105,10 @@ lib/
 #define EMIT_XDR_BARO    false  // Phase 2 — barometric pressure
 #define EMIT_XDR_TEMP    false  // Phase 2 — air temperature
 
+// --- AHRS ---
+#define AHRS_TILT_COMP   true   // Use accel data for tilt-compensated heading
+#define IMU_STALE_MS     1000   // Fall back to raw mag if no IMU data within this window
+
 // --- Timing ---
 #define GPS_OUTPUT_HZ    5      // Rate to emit RMC/GGA/VTG (match Fix2 rate)
 #define HDM_OUTPUT_HZ    10     // Magnetic heading output rate
@@ -169,6 +173,7 @@ struct SensorData {
     // Staleness tracking
     uint32_t last_fix_ms;     // millis() at last Fix2 receive
     uint32_t last_mag_ms;
+    uint32_t last_imu_ms;     // millis() at last RawIMU receive
 };
 
 // Both g_sensors and g_sensors_mux must be defined in dronecan_handler.cpp.
@@ -498,7 +503,7 @@ Execute in order. Verify each phase before starting the next.
 - [ ] NVS credential storage
 
 ### Phase 8 (Future) — AHRS / Tilt Compensation
-- [ ] Tilt-compensated magnetic heading using accel roll/pitch
+- [x] Tilt-compensated magnetic heading using accel roll/pitch (requires CANNODE_PUB_IMU enabled on ARK GPS)
 - [ ] Dead-reckoning fill-in during GPS dropout
 - [ ] Evaluate proprietary NMEA sentences for OpenPlotter AHRS input
 

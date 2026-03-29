@@ -293,12 +293,13 @@ static void decode_raw_imu(const CanardRxTransfer* transfer) {
     float gyro_z = f16_to_float((uint16_t)raw_u64);
 
     portENTER_CRITICAL(&g_sensors_mux);
-    g_sensors.accel_x = accel_x;
-    g_sensors.accel_y = accel_y;
-    g_sensors.accel_z = accel_z;
-    g_sensors.gyro_x  = gyro_x;
-    g_sensors.gyro_y  = gyro_y;
-    g_sensors.gyro_z  = gyro_z;
+    g_sensors.accel_x    = accel_x;
+    g_sensors.accel_y    = accel_y;
+    g_sensors.accel_z    = accel_z;
+    g_sensors.gyro_x     = gyro_x;
+    g_sensors.gyro_y     = gyro_y;
+    g_sensors.gyro_z     = gyro_z;
+    g_sensors.last_imu_ms = millis();
     portEXIT_CRITICAL(&g_sensors_mux);
 }
 
