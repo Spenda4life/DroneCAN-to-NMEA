@@ -1,5 +1,5 @@
 # DroneCAN-to-NMEA Bridge
-This project aims to translate DroneCAN messages into standard NMEA 0183 sentences and distribute it simultaneously over WiFi and a wired serial connection. The ARK GPS module also has magnetometer, barometer, and IMU data that may be useful for later phases of this project.
+This project aims to translate DroneCAN messages into standard NMEA 0183 sentences and distribute it simultaneously over WiFi and a wired serial connection.
 
 ## Hardware
 - ESP32
@@ -25,7 +25,7 @@ This project aims to translate DroneCAN messages into standard NMEA 0183 sentenc
 
 This project uses **PlatformIO** with the Arduino framework for ESP32 (`esp32doit-devkit-v1` target). libcanard is fetched automatically on first build.
 
-Build and flash with PlatformIO (`pio run -t upload`) or use the VS Code PlatformIO extension.
+Build and flash with PlatformIO (`pio run -t upload`).
 
 ## Testing
 
