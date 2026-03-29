@@ -1,6 +1,6 @@
 # DroneCAN-to-NMEA Bridge
 
-Bridges an [ARK GPS](https://arkelectron.com/product/ark-gps/) module (speaking DroneCAN at 1 Mbps) to NMEA 0183 consumers over both wired RS485 serial and WiFi simultaneously. The ESP32 participates as a full DroneCAN node on the bus (heartbeat, dynamic node ID allocation) -- it is not a passive sniffer.
+Bridges an [ARK GPS](https://arkelectron.com/product/ark-gps/) module (speaking DroneCAN at 1 Mbps) to NMEA 0183 consumers over both wired RS485 serial and WiFi simultaneously. The ESP32 participates as a full DroneCAN node on the bus (heartbeat, dynamic node ID allocation).
 
 ```
 ARK GPS ──CAN bus──> ESP32 ──RS485 serial──> Standard Horizon GX1600 VHF
